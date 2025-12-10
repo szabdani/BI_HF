@@ -7,8 +7,7 @@ from sqlalchemy.orm import sessionmaker
 from sqlalchemy import create_engine
 from config import get_db_engine, FD_API_KEY, TM_API_URL
 from models import (
-    Base, DimSeason, DimCompetition, DimTeam, DimPlayer, 
-    FactMatch, FactPlayerPerformance
+    Base, DimSeason, DimCompetition, DimTeam, DimPlayer, FactMatch
 )
 
 # --- KONFIGURÁCIÓ ÉS LOGOLÁS ---
@@ -21,7 +20,6 @@ session = Session()
 
 FD_HEADERS = {'X-Auth-Token': FD_API_KEY}
 RATE_LIMIT_SLEEP = 7  # 10 hívás / perc -> 6 másodpercenként 1 hívás
-TM_SLEEP_BETWEEN_CALLS = 3 # TM API hívások között
 
 # --- SEGÉDFÜGGVÉNYEK ---
 def requests_get_retry(url, headers=None, retries=3, backoff=5):
@@ -92,7 +90,6 @@ def get_or_create_competition(fd_code, name, emblem_url):
         )
 
         # TM API hívás a hiányzó adatok megszerzésére
-        time.sleep(TM_SLEEP_BETWEEN_CALLS)
         tm_data = fetch_tm_competition_data(name)
         if tm_data:
             comp.tm_id = tm_data.get('id')
@@ -105,102 +102,140 @@ def get_or_create_competition(fd_code, name, emblem_url):
         
     return comp
 
-def calculate_age(born):
+def fetch_tm_player_profile(tm_id):
     """
-    Kiszámolja az életkort a születési dátum alapján a mai napra.
+    Lekéri a játékost profilját Transfermarkt API-n
     """
-    if not born:
+    try:
+        url = f"{TM_API_URL}/players/{tm_id}/profile"
+        resp = requests_get_retry(url)
+        if resp.status_code == 200:
+            data = resp.json()
+            return data
+            
+        logger.warning(f"Nem találtunk életkorban egyező játékost: {player_name} (Keresett kor: {calculated_age})")
         return None
-    today = date.today()
-    return today.year - born.year - ((today.month, today.day) < (born.month, born.day))
 
-def fetch_tm_player_data(player_name, fd_dob_date):
+    except Exception as e:
+        logger.error(f"TM API Player Profile Error ({player_name}): {e}")
+    return None
+
+def fetch_tm_player_search(tm_id, player_name):
     """
-    Megkeresi a játékost a Transfermarkt API-n név alapján: 
-    DE életkort is ellenőriz.
+    Lekéri a játékos keresési eredményét Transfermarkt API-n
     """
     try:
         url = f"{TM_API_URL}/players/search/{player_name}"
         resp = requests_get_retry(url)
         if resp.status_code == 200:
             data = resp.json()
-            results = data.get('results', [])
-            if not results:
-                return None
-
-            # Ha nincs születési dátumunk az FD-ből, elfogadjuk az elsőt
-            if not fd_dob_date:
-                logger.warning(f"Nincs FD születési dátum: {player_name}, az első találatot választjuk.")
-                return results[0]
-
-            # Életkor számítása
-            calculated_age = calculate_age(fd_dob_date)
-            
-            # Végigmegyünk a találatokon és keressük az egyezést
-            for res in results:
-                tm_age_str = res.get('age')
-                if tm_age_str and tm_age_str.isdigit():
-                    tm_age = int(tm_age_str)
-                    
-                    # +- 1 év eltérést engedünk 
-                    if abs(tm_age - calculated_age) <= 1:
-                        logger.info(f"Sikeres párosítás: {player_name} (FD Age: {calculated_age}, TM Age: {tm_age})")
-                        return res
-            
-            logger.warning(f"Nem találtunk életkorban egyező játékost: {player_name} (Keresett kor: {calculated_age})")
-            return None
-
+            if data.get('results'):
+                for result in data['results']:
+                    if result.get('id') == tm_id:
+                        logger.info(f"TM Játékos találat: {result.get('name')} (ID: {result.get('id')})")
+                        return result
+                logger.warning(f"TM API: Kereséssel talált játékos ID-ja nem egyezik: {player_name} (ID: {tm_id})")
+            logger.warning(f"TM API: Nem található játékos ezzel a névvel: {player_name}")
     except Exception as e:
         logger.error(f"TM API Player Search Error ({player_name}): {e}")
     return None
+ 
 
-def get_or_create_player(player_entry, team_id):
+def get_or_create_player(tm_id, competition_id):
     """
     Megkeresi a játékost a DB-ben, ha nincs készít.
     """
-    fd_id = player_entry['id']
-    player = session.query(DimPlayer).filter_by(fd_id=fd_id).first()
+    player = session.query(DimPlayer).filter_by(tm_id=tm_id).first()
     
     if not player:
-        logger.info(f"Új játékos feldolgozása: {player_entry['name']}...")    
+        logger.info(f"Új játékos feldolgozása: (ID: {tm_id})...")    
 
-        time.sleep(RATE_LIMIT_SLEEP)
-        url = f"http://api.football-data.org/v4/persons/{fd_id}"
-        resp = requests_get_retry(url, headers=FD_HEADERS)
-        if not resp or resp.status_code != 200:
-            logger.error(f"Hiba a játékos lekérdezésénél: {resp.status_code}")
-            return None
+        # TM Adatok lekérése profil és keresés alapján
+        player_data = fetch_tm_player_profile(tm_id)
+        player_search_data = fetch_tm_player_search(tm_id, player_data['name'])
+
+        nationalities = player_search_data.get('nationalities')
+        if nationalities and isinstance(nationalities, list) and len(nationalities) > 0:
+            main_nationality = nationalities[0]
+        else:
+            main_nationality = None
         
-        player_data = resp.json()
+        # Megkeressük a tm_ID-hoz tartozó DimTeam ID-t
+        tm_club_id = player_search_data.get('club').get('id') if player_search_data and player_search_data.get('club') else None
+        if tm_club_id:
+            team_mapping = session.query(DimTeam).filter_by(tm_id=tm_club_id).first()
+            internal_team_id = None
+            if team_mapping:
+                internal_team_id = team_mapping.team_id 
+            else:
+                # Ha nincs a DB-ben, létrehozzuk a csapatot csak TM adatokból
+                tm_club_name = player_search_data.get('club').get('name')
+                logger.info(f"Hiányzó csapat ({tm_club_name}, ID: {tm_club_id}) létrehozása...")
+                 
+                new_tm_team = DimTeam(
+                    fd_id=None, # Nincs FD ID
+                    tm_id=tm_club_id,
+                    name=tm_club_name,
+                    # A többi adatot megpróbáljuk lekérni, de ha nem sikerül, marad NULL
+                    competition_id=None 
+                )
+                 
+                # Megpróbáljuk a részleteket lekérni
+                try:
+                    url = f"{TM_API_URL}/clubs/{tm_club_id}/profile"
+                    resp = requests_get_retry(url)
+                    if resp and resp.status_code == 200:
+                        club_data = resp.json()
+                        new_tm_team.founded = club_data.get('foundedOn')
+                        new_tm_team.stadium = club_data.get('stadiumName')
+                        new_tm_team.currentTransferRecord = club_data.get('currentTransferRecord')
+                        new_tm_team.currentMarketValue = club_data.get('currentMarketValue')
+                except Exception:
+                    logger.warning(f"Nem sikerült lekérni a csapat profilját TM ID: {tm_club_id}")
+                    pass # Ha nem sikerül a profil, nem baj, a név és ID megvan!
 
-        # Dátum konverzió
-        dob_date = None
-        if player_data.get('dateOfBirth'):
-            try:
-                dob_date = datetime.strptime(player_data['dateOfBirth'], '%Y-%m-%d').date()
-            except: pass
+                try:
+                    session.add(new_tm_team)
+                    session.commit() # Commit, hogy kapjon ID-t
+                    internal_team_id = new_tm_team.team_id
+                    logger.info(f"Új csapat felvéve (ID: {internal_team_id}) a játékoshoz.")
+                except Exception as e:
+                    session.rollback()
+                    logger.error(f"Hiba a játékoshoz felvett csapat mentésekor: {e}")
+                    internal_team_id = None
 
-        # TM Adatok keresése a név ÉS a születési dátum átadásával
-        time.sleep(TM_SLEEP_BETWEEN_CALLS)
-        tm_data = fetch_tm_player_data(player_data['name'], dob_date)
-        
         player = DimPlayer(
-            fd_id=fd_id,
             name=player_data['name'],
-            position=player_data.get('position'),
-            date_of_birth=player_data.get('dateOfBirth'),
-            nationality=player_data.get('nationality'),
+            position=player_search_data.get('position'),  
+            position_name=player_data.get('position').get('main'),
+            nationality=main_nationality,
+            age=player_search_data.get('age'),    
             shirt_number=player_data.get('shirtNumber'),
-            current_team_id=team_id
+            current_team_id=internal_team_id,
         )
-        
-        if tm_data:
-            player.tm_id = tm_data.get('id')
+
+        if internal_team_id is None:
+            logger.warning(f"Játékos {player_data['name']} mentése csapat-hivatkozás nélkül.")
         
         session.add(player)
         session.flush() 
     
     return player
+
+def fetch_tm_players_from_team(tm_team_id, season_year):
+    """
+    Lekéri egy csapat összes játékosát egy szezonon belül a Transfermarkt API-n
+    """
+    try:
+        url = f"{TM_API_URL}/clubs/{tm_team_id}/players?season_id={season_year}"
+        resp = requests_get_retry(url)
+        if resp.status_code == 200:
+            data = resp.json()
+            return data.get('players', [])
+        logger.warning(f"TM API: Nem található csapat keret ezzel az ID-val: {tm_team_id}")
+    except Exception as e:
+        logger.error(f"TM API Get Club Players Error ({tm_team_id}): {e}")
+    return []
 
 def fetch_tm_team_data(team_name, short_name):
     """
@@ -242,7 +277,6 @@ def get_or_create_team(fd_team_data, competition_id):
         logger.info(f"Új csapat feldolgozása: {fd_team_data['name']}...")
         
         # TM Adatok lekérése
-        time.sleep(TM_SLEEP_BETWEEN_CALLS)
         tm_data = fetch_tm_team_data(fd_team_data['name'], fd_team_data.get('shortName'))
         
         team = DimTeam(
@@ -258,8 +292,6 @@ def get_or_create_team(fd_team_data, competition_id):
             team.tm_id = tm_data.get('id')
 
             # TM Csapat profil lekérése a hiányzó adatokért
-            time.sleep(TM_SLEEP_BETWEEN_CALLS) 
-
             try:
                 url = f"{TM_API_URL}/clubs/{team.tm_id}/profile"
                 resp = requests_get_retry(url)
@@ -305,6 +337,7 @@ def run_season_load(competition_code="PL", season_year=2024):
     logger.info(f"Összesen {len(matches_data)} mérkőzés talált.")
 
     # Iterálás a meccseken
+    match_count = 0
     for match_basic in matches_data:
         fd_match_id = match_basic['id']
         
@@ -331,81 +364,15 @@ def run_season_load(competition_code="PL", season_year=2024):
         # Csapatok feldolgozása
         home_team = get_or_create_team(match_detail['homeTeam'], competition_obj.competition_id)
         away_team = get_or_create_team(match_detail['awayTeam'], competition_obj.competition_id)
-        
-        # Játékosok (Lineup + Bench) feldolgozása ÉS Teljesítmény gyűjtés
-        # Egy szótárba gyűjtjük a játékosok teljesítményét {fd_player_id: PerformanceObj}
-        performances = {}
+    
+        # Játékosok feldolgozása
+        home_players = fetch_tm_players_from_team(home_team.tm_id, season_year)
+        for player_entry in home_players:
+            get_or_create_player(player_entry['id'], competition_obj.competition_id)
 
-        def process_squad_list(squad_list, team_db_id, side_name):
-            """Segédfüggvény a kezdő és csere feldolgozására"""
-            for player_entry in squad_list:
-                # Játékos létrehozása/lekérése
-                p_obj = get_or_create_player(player_entry, team_db_id)
-                
-                # Performance init (alapértelmezett értékekkel)
-                perf = FactPlayerPerformance(
-                    player_id=p_obj.player_id,
-                    team_id=team_db_id,
-                    minutes_played=0,
-                    goals=0,
-                    assists=0,
-                    yellow_cards=0,
-                    red_cards=0
-                )
-                performances[p_obj.fd_id] = perf
-
-        # Hazai és vendég játékosok
-        process_squad_list(match_detail['homeTeam'].get('lineup', []), home_team.team_id, match_detail['homeTeam']['name'])
-        process_squad_list(match_detail['homeTeam'].get('bench', []), home_team.team_id, match_detail['homeTeam']['name'])
-        process_squad_list(match_detail['awayTeam'].get('lineup', []), away_team.team_id, match_detail['awayTeam']['name'])
-        process_squad_list(match_detail['awayTeam'].get('bench', []), away_team.team_id, match_detail['awayTeam']['name'])
-
-        # Események feldolgozása -> Performance objektumok frissítése
-        # Gólok
-        for goal in match_detail.get('goals', []):
-            scorer_id = goal['scorer']['id']
-            assist_id = goal['assist']['id']
-            
-            if scorer_id and scorer_id in performances:
-                performances[scorer_id].goals += 1
-            if assist_id and assist_id in performances:
-                performances[scorer_id].assists += 1
-
-        # Lapok
-        for booking in match_detail.get('bookings', []):
-            card_player_id = booking['player']['id']
-            card_type = booking['card']
-            
-            if card_player_id in performances:
-                if card_type == 'YELLOW':
-                    performances[card_player_id].yellow_cards += 1
-                elif card_type == 'RED':
-                    performances[card_player_id].red_cards += 1
-
-        # Percek számítása (Kezdő: full duration, Csere: +- mikor cserélték)
-        # Ha nincs injuryTime, legyen 0, ha nincs minute, legyen 90
-        injury_time = match_detail.get('injuryTime') if match_detail.get('injuryTime') else 0
-        full_time = match_detail.get('minute') if match_detail.get('minute') else 90
-        match_duration = full_time + injury_time
-        
-        # Kezdők
-        for p_entry in match_detail['homeTeam'].get('lineup', []) + match_detail['awayTeam'].get('lineup', []):
-            if p_entry['id'] in performances:
-                 performances[p_entry['id']].minutes_played = match_duration
-
-        # Cserék
-        for sub in match_detail.get('substitutions', []):
-            player_out_id = sub['playerOut']['id']
-            player_in_id = sub['playerIn']['id']
-            minute = sub['minute']
-            
-            # Aki lejött: mennyi ideig játszott
-            if player_out_id in performances:
-                performances[player_out_id].minutes_played = minute
-            
-            # Aki bejött: full - mikor jött be
-            if player_in_id in performances:
-                performances[player_in_id].minutes_played = match_duration - minute
+        away_players = fetch_tm_players_from_team(away_team.tm_id, season_year)
+        for player_entry in away_players:
+            get_or_create_player(player_entry['id'], competition_obj.competition_id)
 
         # Match mentése
         match_fact = FactMatch(
@@ -420,18 +387,9 @@ def run_season_load(competition_code="PL", season_year=2024):
             status=match_detail['status']
         )
         session.add(match_fact)
-        session.flush() # Ki kell nyerni a match_id-t
-
-        # Performance mentése akik játszottak, vagy kaptak lapot
-        count_saved = 0
-        for perf in performances.values():
-            if perf.minutes_played > 0 or perf.yellow_cards > 0 or perf.red_cards > 0:
-                perf.match_id = match_fact.match_id
-                session.add(perf)
-                count_saved += 1
-
         session.commit()
-        logger.info(f"Meccs mentve és commitolva: {fd_match_id}")
+        match_count += 1
+        logger.info(f"Meccs mentve és commitolva {match_count}/{len(matches_data)}: {fd_match_id}")
 
     logger.info("A teljes szezon feldolgozása befejeződött.")
 

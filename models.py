@@ -45,16 +45,16 @@ class DimTeam(Base):
 class DimPlayer(Base):
     __tablename__ = 'dim_players'
     player_id = Column(Integer, primary_key=True, autoincrement=True)
-    fd_id = Column(Integer, unique=True, nullable=True)
     tm_id = Column(Integer, unique=True, nullable=True)
     
     name = Column(String)
     position = Column(String)
-    date_of_birth = Column(Date)
+    position_name = Column(String)
     nationality = Column(String)
-    shirt_number = Column(Integer, nullable=True)
+    age = Column(Integer, nullable=True)
+    shirt_number = Column(String, nullable=True)
 
-    current_team_id = Column(Integer, ForeignKey('dim_teams.team_id'))
+    current_team_id = Column(Integer, ForeignKey('dim_teams.team_id'), nullable=True)
     current_team = relationship("DimTeam", backref="current_players")
 
 # --- TÉNY TÁBLÁK ---
@@ -79,24 +79,6 @@ class FactMatch(Base):
     away_score = Column(Integer)
     status = Column(String) # 'FINISHED', 'SCHEDULED'
 
-class FactPlayerPerformance(Base):
-    """
-    A legfontosabb tábla a játékos statisztikákhoz.
-    Minden játékosról, aki pályára lépett egy meccsen, készül egy sor.
-    """
-    __tablename__ = 'fact_player_performances'
-    performance_id = Column(Integer, primary_key=True, autoincrement=True)
-    
-    match_id = Column(Integer, ForeignKey('fact_matches.match_id'))
-    player_id = Column(Integer, ForeignKey('dim_players.player_id'))
-    team_id = Column(Integer, ForeignKey('dim_teams.team_id'))
-    
-    minutes_played = Column(Integer, default=0)
-    goals = Column(Integer, default=0)
-    assists = Column(Integer, default=0)
-    yellow_cards = Column(Integer, default=0)
-    red_cards = Column(Integer, default=0)
-    
 
 class FactMarketValue(Base):
     """
