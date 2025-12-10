@@ -23,7 +23,7 @@ FD_HEADERS = {'X-Auth-Token': FD_API_KEY}
 def get_db_session():
     return Session()
 
-def requests_get_retry(url, headers=None, retries=3, backoff=5):
+def requests_get_retry(url, headers=None, retries=3, backoff=2):
     """Biztonságos kérés újrapróbálkozással."""
     for i in range(retries):
         try:
