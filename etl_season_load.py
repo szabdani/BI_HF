@@ -3,190 +3,18 @@ import argparse
 from datetime import datetime
 from config import FD_API_KEY, TM_API_URL
 from models import (
-    Base, DimSeason, DimCompetition, DimTeam, DimPlayer, FactMatch
+    DimTeam, FactMatch
 )
 from utils import (
-    get_db_session, logger, FD_HEADERS, requests_get_retry, fetch_tm_competition_data, 
-    fetch_tm_player_search, fetch_tm_player_profile, fetch_tm_club_profile, fetch_tm_players_from_team,
-    fetch_tm_team_data_search
+    get_db_session, logger, FD_HEADERS, requests_get_retry, 
+    get_or_create_season, get_or_create_competition, get_or_create_team, get_or_create_player,
+    fetch_tm_competition_data, fetch_tm_player_search, fetch_tm_player_profile, 
+    fetch_tm_club_profile, fetch_tm_players_from_team, fetch_tm_team_data_search
 )
 
 session = get_db_session()
 
 # --- SEGÉDFÜGGVÉNYEK ---
-def get_or_create_season(name, start_year, end_year):
-    """
-    Megkeresi a szezont a DB-ben, ha nincs készít.
-    """
-    season = session.query(DimSeason).filter_by(name=name).first()
-    if not season:
-        season_name_TM = f"{str(start_year)[-2:]}/{str(end_year)[-2:]}"
-        season = DimSeason(name=name, season_name_TM=season_name_TM, start_year=start_year, end_year=end_year)
-        session.add(season)
-        session.commit()
-        logger.info(f"Szezon létrehozva: {name}")
-    return season
-
-def get_or_create_competition(fd_code, name, emblem_url):
-    """
-    Megkeresi a bajnokságot a DB-ben, ha nincs készít.
-    """
-    comp = session.query(DimCompetition).filter_by(fd_id=fd_code).first()
-    
-    if not comp:
-        logger.info(f"Új bajnokság létrehozása: {name}...")
-        
-        comp = DimCompetition(
-            fd_id=fd_code, 
-            name=name, 
-            emblem_url=emblem_url
-        )
-
-        # TM API hívás a hiányzó adatok megszerzésére
-        tm_data = fetch_tm_competition_data(name)
-        if tm_data:
-            comp.tm_id = tm_data.get('id')
-            comp.country = tm_data.get('country')
-            comp.continent = tm_data.get('continent')
-
-        session.add(comp)
-        session.commit()
-        logger.info(f"Bajnokság elmentve: {name} (TM ID: {comp.tm_id})")
-        
-    return comp
-
-def get_or_create_player(tm_id, competition_id):
-    """
-    Megkeresi a játékost a DB-ben, ha nincs készít.
-    """
-    player = session.query(DimPlayer).filter_by(tm_id=tm_id).first()
-
-    # Diogo Jota elhunyt játékos, akire nem működik a TM API profile hívás
-    if(tm_id == "340950"):    
-        logger.warning(f"TM API hiba miatt a játékos kihagyva: (ID: {tm_id})...")
-        return player
-
-    if not player:
-        logger.info(f"Új játékos feldolgozása: (ID: {tm_id})...")    
-    
-        # TM Adatok lekérése profil és keresés alapján
-        player_data = fetch_tm_player_profile(tm_id)
-        player_search_data = fetch_tm_player_search(tm_id, player_data['name'])
-
-        nationalities = player_search_data.get('nationalities')
-        if nationalities and isinstance(nationalities, list) and len(nationalities) > 0:
-            main_nationality = nationalities[0]
-        else:
-            main_nationality = None
-        
-        # Megkeressük a tm_ID-hoz tartozó DimTeam ID-t
-        tm_club_id = player_search_data.get('club').get('id') if player_search_data and player_search_data.get('club') else None
-        if tm_club_id:
-            team_mapping = session.query(DimTeam).filter_by(tm_id=tm_club_id).first()
-            internal_team_id = None
-            if team_mapping:
-                internal_team_id = team_mapping.team_id 
-            else:
-                # Ha nincs a DB-ben, létrehozzuk a csapatot csak TM adatokból
-                tm_club_name = player_search_data.get('club').get('name')
-                logger.info(f"Hiányzó csapat ({tm_club_name}, ID: {tm_club_id}) létrehozása...")
-                 
-                new_tm_team = DimTeam(
-                    fd_id=None, # Nincs FD ID
-                    tm_id=tm_club_id,
-                    name=tm_club_name,
-                    competition_id=None 
-                )
-                 
-                # Megpróbáljuk a részleteket lekérni
-                club_data = fetch_tm_club_profile(tm_club_id)
-                if club_data:
-                    new_tm_team.founded = club_data.get('foundedOn')
-                    new_tm_team.stadium = club_data.get('stadiumName')
-                    new_tm_team.currentTransferRecord = club_data.get('currentTransferRecord')
-                    new_tm_team.currentMarketValue = club_data.get('currentMarketValue')
-
-                try:
-                    session.add(new_tm_team)
-                    session.commit() # Commit, hogy kapjon ID-t
-                    internal_team_id = new_tm_team.team_id
-                    logger.info(f"Új csapat felvéve (ID: {internal_team_id}) a játékoshoz.")
-                except Exception as e:
-                    session.rollback()
-                    logger.error(f"Hiba a játékoshoz felvett csapat mentésekor: {e}")
-                    return None
-
-        player = DimPlayer(
-            name=player_data['name'],
-            tm_id=tm_id,
-            position=player_search_data.get('position'),  
-            position_name=player_data.get('position').get('main'),
-            nationality=main_nationality,
-            age=player_search_data.get('age'),    
-            shirt_number=player_data.get('shirtNumber'),
-            current_team_id=internal_team_id,
-        )
-
-        if internal_team_id is None:
-            logger.warning(f"Játékos {player_data['name']} mentése csapat-hivatkozás nélkül.")
-        
-        session.add(player)
-        session.commit()
-        logger.info(f"Új játékos commitolva: (ID: {tm_id})...")  
-    
-    return player
-
-def get_or_create_team(fd_team_data, competition_id):
-    """
-    Ellenőrzi, hogy a csapat létezik-e. Ha nem, létrehozza FD + TM adatokból.
-    """
-    fd_id = fd_team_data['id']
-    team = session.query(DimTeam).filter_by(fd_id=fd_id).first()
-    
-    if not team:
-        logger.info(f"Új csapat feldolgozása: {fd_team_data['name']}...")
-        
-        # TM Adatok lekérése
-        tm_data = fetch_tm_team_data_search(fd_team_data['name'], fd_team_data.get('shortName'))
-        
-        team = DimTeam(
-            fd_id=fd_id,
-            name=fd_team_data['name'],
-            short_name=fd_team_data.get('shortName'),
-            tla=fd_team_data.get('tla'),
-            crest_url=fd_team_data.get('crest'),
-            competition_id=competition_id
-        )
-        
-        if tm_data:
-            team.tm_id = tm_data.get('id')
-            # Ha már létezik a csapat TM ID alapján, frissítjük az FD adatokat
-            existing_team = session.query(DimTeam).filter_by(tm_id=team.tm_id).first()
-            if existing_team:
-                logger.info(f"Ez a csapat már létezik a DB-ben: {existing_team.name}, FD infókkal kiegésztjük.")
-                existing_team.fd_id = team.fd_id
-                existing_team.short_name = team.short_name
-                existing_team.tla = team.tla
-                existing_team.crest_url = team.crest_url
-                existing_team.competition_id = team.competition_id
-                session.commit()
-
-                return existing_team
-
-            # TM Csapat profil lekérése a hiányzó adatokért
-            club_data = fetch_tm_club_profile(team.tm_id)
-            if club_data:
-                team.founded = club_data.get('foundedOn')
-                team.stadium = club_data.get('stadiumName')
-                team.currentTransferRecord = club_data.get('currentTransferRecord')
-                team.currentMarketValue = club_data.get('currentMarketValue')
-            
-        session.add(team)
-        session.commit()
-        logger.info(f"Új csapat commitolva: {fd_team_data['name']}...")
-    
-    return team
-
 def season_load_competition(competition_code, season_year):
     """
     Lekéri és betölti egy bajnokság adatait a DB-be.
@@ -222,25 +50,25 @@ def season_load_teams(competition_obj, season_year, with_players=False):
         dim_team = get_or_create_team(team, competition_obj.competition_id)
 
         if with_players:
-            season_load_players_from_team(dim_team.tm_id, season_year, competition_obj.competition_id)
+            season_load_players_from_team(dim_team.tm_id, season_year)
         
         team_count += 1
         logger.info(f"Csapat és játékosai mentve és commitolva {team_count}/{len(teams_data)}")
 
-def season_load_players_from_team(tm_team_id, season_year, competition_id):
+def season_load_players_from_team(tm_team_id, season_year):
     """
     Lekéri és betölti egy csapat összes játékosát egy szezonon belül a DB-be.
     """
     players = fetch_tm_players_from_team(tm_team_id, season_year)
     for player_entry in players:
-        get_or_create_player(player_entry['id'], competition_id)
+        get_or_create_player(player_entry['id'])
 
 
-def season_load_matches(competition_obj, season_year):
+def season_load_matches(competition_obj, season_obj):
     """
     Lekéri és betölti egy szezon összes mérkőzését a DB-be.
     """
-    url = f"http://api.football-data.org/v4/competitions/{competition_obj.fd_id}/matches?season={season_year}"
+    url = f"http://api.football-data.org/v4/competitions/{competition_obj.fd_id}/matches?season={season_obj.start_year}"
     resp = requests_get_retry(url, headers=FD_HEADERS)
     if resp.status_code != 200:
         logger.error(f"Hiba a meccsek listázásánál: {resp.status_code}")
@@ -292,6 +120,7 @@ def run_season_load(competition_code="PL", season_year=2024):
     session.rollback()
     logger.info(f"--- Season load indítása: {competition_code} {season_year} ---")
 
+    # Szezon létrehozása vagy lekérése
     season_obj = get_or_create_season(f"{season_year}/{season_year+1}", season_year, season_year+1)
 
     # Bajnokság lekérése a listából (FD API)
@@ -301,7 +130,7 @@ def run_season_load(competition_code="PL", season_year=2024):
     season_load_teams(competition_obj, season_year, with_players=True)
 
     # Összes meccs lekérése a listából (FD API)
-    season_load_matches(competition_obj, season_year)
+    season_load_matches(competition_obj, season_obj)
 
     logger.info("A teljes szezon feldolgozása befejeződött.")
 

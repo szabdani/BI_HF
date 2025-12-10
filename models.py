@@ -16,7 +16,7 @@ class DimSeason(Base):
 class DimCompetition(Base):
     __tablename__ = 'dim_competitions'
     competition_id = Column(Integer, primary_key=True, autoincrement=True)
-    fd_id = Column(String, unique=True)
+    fd_id = Column(String, unique=True, nullable=True)
     tm_id = Column(String, unique=True, nullable=True)
 
     name = Column(String)
@@ -109,6 +109,7 @@ class FactTransfer(Base):
 
     date_recorded = Column(Date)
     market_value_eur = Column(Integer)
+    fee_eur = Column(Integer)
 
 class FactPlayerSeasonStat(Base):
     """
@@ -120,8 +121,8 @@ class FactPlayerSeasonStat(Base):
     player_id = Column(Integer, ForeignKey('dim_players.player_id'))
     team_id = Column(Integer, ForeignKey('dim_teams.team_id'))
     season_id = Column(Integer, ForeignKey('dim_seasons.season_id'))
+    competition_id = Column(Integer, ForeignKey('dim_competitions.competition_id'))
 
-    competition_name = Column(String)
     appearances = Column(Integer)
     goals = Column(Integer)
     assists = Column(Integer)
