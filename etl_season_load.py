@@ -61,9 +61,14 @@ def get_or_create_player(tm_id, competition_id):
     """
     player = session.query(DimPlayer).filter_by(tm_id=tm_id).first()
 
+    # Diogo Jota elhunyt játékos, akire nem működik a TM API profile hívás
+    if(tm_id == "340950"):    
+        logger.warning(f"TM API hiba miatt a játékos kihagyva: (ID: {tm_id})...")
+        return player
+
     if not player:
         logger.info(f"Új játékos feldolgozása: (ID: {tm_id})...")    
-
+    
         # TM Adatok lekérése profil és keresés alapján
         player_data = fetch_tm_player_profile(tm_id)
         player_search_data = fetch_tm_player_search(tm_id, player_data['name'])
@@ -182,30 +187,28 @@ def get_or_create_team(fd_team_data, competition_id):
     
     return team
 
-# --- FŐ FÜGGVÉNY ---
-
-def run_season_load(competition_code="PL", season_year=2024):
+def season_load_competition(competition_code, season_year):
     """
-    A fő függvény, ami végigmegy a szezon összes meccsén.
+    Lekéri és betölti egy bajnokság adatait a DB-be.
     """
-    session.rollback()
-    logger.info(f"--- Season load indítása: {competition_code} {season_year} ---")
-
-    season_obj = get_or_create_season(f"{season_year}/{season_year+1}", season_year, season_year+1)
-    
-    # Összes meccs lekérése a listából (FD API)
-    url = f"http://api.football-data.org/v4/competitions/{competition_code}/matches?season={season_year}"
+    # Bajnokság lekérése a listából (FD API)
+    url = f"http://api.football-data.org/v4/competitions/{competition_code}"
     resp = requests_get_retry(url, headers=FD_HEADERS)
     if resp.status_code != 200:
         logger.error(f"Hiba a meccsek listázásánál: {resp.status_code}")
-        return
-
-    matches_data = resp.json().get('matches', [])
-    comp_meta = resp.json().get('competition', {})
+        return None
+    
+    comp_meta = resp.json()
     competition_obj = get_or_create_competition(comp_meta.get('code'), comp_meta.get('name'), comp_meta.get('emblem'))
     
-    # Összes csapat lekérése a listából (FD API)
-    url = f"http://api.football-data.org/v4/competitions/{competition_code}/teams?season={season_year}"
+    return competition_obj
+
+def season_load_teams(competition_obj, season_year, with_players=False):
+    """
+    Lekéri és betölti egy szezon összes csapatát a DB-be.
+    """
+     # Összes csapat lekérése a listából (FD API)
+    url = f"http://api.football-data.org/v4/competitions/{competition_obj.fd_id}/teams?season={season_year}"
     resp = requests_get_retry(url, headers=FD_HEADERS)
     if resp.status_code != 200:
         logger.error(f"Hiba a meccsek listázásánál: {resp.status_code}")
@@ -218,15 +221,33 @@ def run_season_load(competition_code="PL", season_year=2024):
         # Csapatok feldolgozása
         dim_team = get_or_create_team(team, competition_obj.competition_id)
 
-        # Játékosok feldolgozása
-        players = fetch_tm_players_from_team(dim_team.tm_id, season_year)
-        for player_entry in players:
-            get_or_create_player(player_entry['id'], competition_obj.competition_id)
+        if with_players:
+            season_load_players_from_team(dim_team.tm_id, season_year, competition_obj.competition_id)
         
         team_count += 1
         logger.info(f"Csapat és játékosai mentve és commitolva {team_count}/{len(teams_data)}")
 
-    logger.info(f"Összesen {len(matches_data)} mérkőzés talált.")
+def season_load_players_from_team(tm_team_id, season_year, competition_id):
+    """
+    Lekéri és betölti egy csapat összes játékosát egy szezonon belül a DB-be.
+    """
+    players = fetch_tm_players_from_team(tm_team_id, season_year)
+    for player_entry in players:
+        get_or_create_player(player_entry['id'], competition_id)
+
+
+def season_load_matches(competition_obj, season_year):
+    """
+    Lekéri és betölti egy szezon összes mérkőzését a DB-be.
+    """
+    url = f"http://api.football-data.org/v4/competitions/{competition_obj.fd_id}/matches?season={season_year}"
+    resp = requests_get_retry(url, headers=FD_HEADERS)
+    if resp.status_code != 200:
+        logger.error(f"Hiba a meccsek listázásánál: {resp.status_code}")
+        return
+
+    matches_data = resp.json().get('matches', [])
+
     # Iterálás a meccseken
     match_count = 0
     for match in matches_data:
@@ -261,6 +282,26 @@ def run_season_load(competition_code="PL", season_year=2024):
         session.add(match_fact)
         session.commit()
         logger.info(f"Meccs mentve és commitolva {match_count}/{len(matches_data)}: {fd_match_id}")
+
+# --- FŐ FÜGGVÉNY ---
+
+def run_season_load(competition_code="PL", season_year=2024):
+    """
+    A fő függvény, ami végigmegy a szezon összes meccsén.
+    """
+    session.rollback()
+    logger.info(f"--- Season load indítása: {competition_code} {season_year} ---")
+
+    season_obj = get_or_create_season(f"{season_year}/{season_year+1}", season_year, season_year+1)
+
+    # Bajnokság lekérése a listából (FD API)
+    competition_obj = season_load_competition(competition_code, season_year)
+    
+    # Összes csapat lekérése a listából (FD API)
+    season_load_teams(competition_obj, season_year, with_players=True)
+
+    # Összes meccs lekérése a listából (FD API)
+    season_load_matches(competition_obj, season_year)
 
     logger.info("A teljes szezon feldolgozása befejeződött.")
 
