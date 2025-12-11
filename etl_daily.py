@@ -8,9 +8,9 @@ from models import (
     FactMarketValue, FactTransfer, FactPlayerSeasonStat
 )
 from utils import (
-    get_db_session, logger, requests_get_retry, 
+    get_db_session, logger, requests_get_retry, FD_HEADERS,
     fetch_tm_club_profile, fetch_tm_market_value, fetch_tm_transfers, fetch_tm_stats, fetch_tm_players_from_team,
-    get_or_create_player, FD_HEADERS
+    get_or_create_player, get_season_from_TMname, get_or_create_team_by_tm_id, get_or_create_competition_by_tm_id
 )
 
 session = get_db_session()
@@ -66,15 +66,10 @@ def update_team_details(team):
         session.commit()
         logger.info(f"Csapat adatok frissítve - {team.name}")
 
-def update_player_details(player, current_team_id, current_season_tm):
+def update_player_details(player, current_season_tm):
     """
     Frissíti a játékos csapatát, piaci értékét, átigazolásait és statisztikáit.
     """
-    
-    if player.current_team_id != current_team_id:
-        logger.info(f"Átigazolás - {player.name} (Régi: {player.current_team_id}, Új: {current_team_id})")
-        player.current_team_id = current_team_id
-        session.commit()
 
     # Ha nincs TM ID, nem tudunk továbbmenni
     if not player.tm_id:
@@ -136,10 +131,14 @@ def update_player_details(player, current_team_id, current_season_tm):
                     market_value_eur=latest_entry.get('marketValue'),
                     fee_eur=latest_entry.get('fee')
                 )
+
+                logger.info(f"Átigazolás - {player.name} (Régi: {tf.teamFrom_id}, Új: {tf.teamTo_id})")
+                player.current_team_id = tf.teamTo_id
+                session.commit()
                 
                 session.add(mv)
                 session.commit()
-                logger.info(f"Új Transfer rögzítve - {player.name}: {date_recorded}, {latest_entry.get('marketValue')}")
+                logger.info(f"Új Transfer rögzítve - {player.name}: {date_recorded},  {latest_entry.get('marketValue')}")
         except Exception as e:
             logger.error(f"Transfer Update Hiba: {e}")
 
@@ -225,6 +224,24 @@ def run_daily_etl():
     current_season_tm = get_current_season_tm_name()
     logger.info(f"Aktuális szezon (TM): {current_season_tm}")
 
+    # Csapatok frissítése
+    teams_query = session.query(DimTeam).filter(DimTeam.tm_id.isnot(None))
+    teams = teams_query.all()
+    logger.info(f"Összesen {len(teams)} csapat részleteinek frissítése indul...")
+
+    for i, team in enumerate(teams):
+        logger.info(f"[{i+1}/{len(teams)}] Feldolgozás: {player.name}...")
+        update_team_details(team)
+
+    # Játékosok frissítése
+    players_query = session.query(DimPlayer).filter(DimPlayer.tm_id.isnot(None))
+    players = players_query.all()
+    logger.info(f"Összesen {len(players)} játékos részleteinek frissítése indul...")
+
+    for i, player in enumerate(players):
+        logger.info(f"[{i+1}/{len(players)}] Feldolgozás: {player.name}...")
+        update_player_details(player, current_season_tm)
+
     # Meccsek lekérése tegnapról (Football-Data API)
     # Csak PL (2021-es kód)
     COMPETITION_CODE = "PL" 
@@ -283,38 +300,6 @@ def run_daily_etl():
     if not teams_played_ids:
         logger.info("Nem volt tegnap releváns mérkőzés. Leállítás.")
         return
-
-    # Érintett csapatok és játékosaik frissítése
-    logger.info(f"Frissítendő csapatok száma: {len(teams_played_ids)}")
-    
-    for team_id in teams_played_ids:
-        team = session.query(DimTeam).get(team_id)
-        if not team: continue
-        
-        logger.info(f"--- Csapat frissítése: {team.name} ---")
-        
-        # Csapat adatok frissítése
-        update_team_details(team)
-        
-        # Játékosok frissítése
-        if team.tm_id:
-            current_squad = fetch_tm_players_from_team(team.tm_id, current_season_tm)
-            
-            logger.info(f"Játékosok ellenőrzése ({len(current_squad)} fő)...")
-            
-            for player_entry in current_squad:
-                tm_player_id = int(player_entry['id'])
-                
-                # Megkeressük a játékost a DB-ben
-                player = session.query(DimPlayer).filter_by(tm_id=tm_player_id).first()
-                
-                if player:
-                    # Ha megvan, frissítjük az adatait
-                    update_player_details(player, team.team_id, current_season_tm)
-                else:
-                    # Ha nincs meg (új igazolás), létre kell hozni!
-                    logger.info(f"Új játékos a keretben: {player_entry.get('name')} (Létrehozás...)")
-                    get_or_create_player(tm_player_id)
 
     logger.info("Napi ETL sikeresen befejeződött.")
 

@@ -1,7 +1,6 @@
 import time
 import argparse
 from datetime import datetime
-from config import FD_API_KEY, TM_API_URL
 from models import (
     DimTeam, FactMatch
 )
@@ -23,7 +22,7 @@ def season_load_competition(competition_code, season_year):
     url = f"http://api.football-data.org/v4/competitions/{competition_code}"
     resp = requests_get_retry(url, headers=FD_HEADERS)
     if resp.status_code != 200:
-        logger.error(f"Hiba a meccsek listázásánál: {resp.status_code}")
+        logger.error(f"Hiba a bajnokság lekérdezésénél: {resp.status_code}")
         return None
     
     comp_meta = resp.json()

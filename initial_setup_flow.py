@@ -4,6 +4,28 @@ import subprocess
 import os
 import sys
 
+@task(name="Initialize_DB_Schema")
+def run_init_db():
+    """
+    Lefuttatja az init_db.py-t, amely törli és újra létrehozza az összes táblát (DROP CASCADE).
+    """
+    python_executable = sys.executable 
+    command = [
+        python_executable, 
+        os.path.join(os.path.dirname(__file__), "init_db.py")
+    ]
+    
+    logger = get_run_logger()
+    logger.info(f"Futtatás indítása: {' '.join(command)}")
+    
+    result = subprocess.run(command, capture_output=True, text=True, check=True)
+    
+    logger.info(f"stdout: {result.stdout}")
+    if result.stderr:
+        logger.warning(f"stderr (warnings/errors): {result.stderr}")
+        
+    return result.returncode
+
 @task(name="Load_Season_Data")
 def run_season_load(competition: str, year: int):
     """
@@ -37,8 +59,7 @@ def run_player_details():
     python_executable = sys.executable
     command = [
         python_executable, 
-        os.path.join(os.path.dirname(__file__), "etl_player_data.py"),
-        "-l 2" # Limit 2-re, hogy le is tudjon futni rendesen
+        os.path.join(os.path.dirname(__file__), "etl_player_data.py")
     ]
     
     logger = get_run_logger()
@@ -50,8 +71,9 @@ def run_player_details():
 
 @flow(name="Load_PL_2025")
 def initial_setup_flow(competition: str = "PL", year: int = 2025):
-    season_result = run_season_load(competition, year)
-    
+    init_result = run_init_db()
+
+    season_result = run_season_load(competition, year, wait_for=[init_result])    
     # Csak akkor futtatjuk a kiegészítő adatokat, ha a szezon betöltés sikeres volt
     if season_result == 0:
         run_player_details()

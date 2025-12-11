@@ -175,11 +175,6 @@ def get_or_create_player(tm_id):
     """
     player = session.query(DimPlayer).filter_by(tm_id=tm_id).first()
 
-    # Diogo Jota elhunyt játékos, akire nem működik a TM API profile hívás
-    if(tm_id == "340950" or tm_id == "503866"):    
-        logger.warning(f"TM API hiba miatt a játékos kihagyva: (ID: {tm_id})...")
-        return player
-
     if not player:
         logger.info(f"Új játékos feldolgozása: (ID: {tm_id})...")    
     
@@ -211,7 +206,7 @@ def get_or_create_player(tm_id):
             current_team_id=team_id,
         )
 
-        if internal_team_id is None:
+        if team_id is None:
             logger.warning(f"Játékos {player_data['name']} mentése csapat-hivatkozás nélkül.")
         
         session.add(player)
