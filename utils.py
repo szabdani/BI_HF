@@ -112,7 +112,7 @@ def get_or_create_competition(fd_code, name, emblem_url):
     """
     Megkeresi a bajnokságot a DB-ben, ha nincs készít.
     """
-    comp = session.query(DimCompetition).filter_by(fd_code=fd_code).first()
+    comp = session.query(DimCompetition).filter_by(fd_id=fd_code).first()
     if not comp:
         logger.info(f"Új bajnokság létrehozása: {name}...")
         
