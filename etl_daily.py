@@ -94,11 +94,11 @@ def update_player_details(player, current_season_tm):
                     player_id=player.player_id,
                     date_recorded=date_recorded,
                     market_value_eur=latest_entry.get('marketValue'),
-                    team_id=current_team_id
+                    team_id=latest_entry.get('team_id')
                 )
                 session.add(mv)
                 session.commit()
-                logger.info(f"Új Market Value rögzítve - {player.name}: (Régi: {player.current_team_id}, Új: {current_team_id})")
+                logger.info(f"Új Market Value rögzítve - {player.name}: {mv.market_value_eur})")
         except Exception as e:
             logger.error(f"Market Value Update Hiba: {e}")
 
@@ -200,7 +200,7 @@ def update_player_details(player, current_season_tm):
                 # Ha még nincs rekord erre a szezonra, létrehozzuk
                 new_stat = FactPlayerSeasonStat(
                     player_id=player.player_id,
-                    team_id=current_team_id,
+                    team_id=player.team_id,
                     season_id=season_db.season_id,
                     competition_id=competition.competition_id,
                     appearances=api_apps,

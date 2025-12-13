@@ -41,6 +41,7 @@ def requests_get_retry(url, headers=None, retries=3, backoff=2):
         time.sleep(backoff)
     return None
 
+# --- DB lekérdezések ---
 def get_season_from_TMname(season_name_tm):
     """
     Szezon lekérése a neve alapján (pl. '22/23' vagy '2022').
@@ -94,7 +95,6 @@ def get_season_from_TMname(season_name_tm):
         logger.error(f"Hiba a szezonkód feldolgozásánál ({season_code}): {e}")
         return None
 
-# --- DB lekérdezések ---
 def get_or_create_season(name, start_year, end_year):
     """
     Megkeresi a szezont a DB-ben, ha nincs készít.
@@ -306,7 +306,6 @@ def get_or_create_team_by_tm_id(tm_id, club_name):
             logger.error(f"Hiba a játékoshoz felvett csapat mentésekor: {e}")
             return None
     return team_id
-
 
 # --- TM API HÍVÁSOK ---
 def fetch_tm_competition_data(comp_name):
