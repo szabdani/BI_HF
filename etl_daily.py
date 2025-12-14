@@ -75,73 +75,74 @@ def update_player_details(player, current_season_tm):
     if not player.tm_id:
         return
 
-    # Market Value ellenőrzés
-    mv_data = fetch_tm_market_value(player.tm_id)
-    if mv_data and 'marketValueHistory' in mv_data:
-        # Megnézzük a legutolsó bejegyzést az API-ban
-        latest_entry = mv_data['marketValueHistory'][-1]
-        try:
-            date_recorded = latest_entry.get('date')
-            
-            # Megnézzük, van-e már ilyen dátumú bejegyzésünk
-            exists = session.query(FactTransfer).filter_by(
-                player_id=player.player_id, 
-                date_recorded=date_recorded
-            ).first()
-
-            if not exists:
-                mv = FactMarketValue(
-                    player_id=player.player_id,
-                    date_recorded=date_recorded,
-                    market_value_eur=latest_entry.get('marketValue'),
-                    team_id=latest_entry.get('team_id')
-                )
-                session.add(mv)
-                session.commit()
-                logger.info(f"Új Market Value rögzítve - {player.name}: {mv.market_value_eur})")
-        except Exception as e:
-            logger.error(f"Market Value Update Hiba: {e}")
-
     # Transfer History ellenőrzés (Új rekord)
     tf_data = fetch_tm_transfers(player.tm_id)
     if tf_data and 'transfers' in tf_data:
         # Megnézzük a legutolsó bejegyzést az API-ban
-        latest_entry = tf_data['transfers'][-1]
-        try:
-            date_recorded = latest_entry.get('date')
-            
-            # Megnézzük, van-e már ilyen dátumú bejegyzésünk
-            exists = session.query(FactMarketValue).filter_by(
-                player_id=player.player_id, 
-                date_recorded=date_recorded
-            ).first()
-
-            if not exists:
-                # Transfer adatok lekérdezése
-                season = get_season_from_TMname(latest_entry.get('season'))
-                from_team_id = get_or_create_team_by_tm_id(latest_entry.get('clubFrom', {}).get('id'), latest_entry.get('clubFrom', {}).get('name'))
-                to_team_id = get_or_create_team_by_tm_id(latest_entry.get('clubTo', {}).get('id'), latest_entry.get('clubTo', {}).get('name'))
-
-                tf = FactTransfer(
-                    player_id=player.player_id,
-                    date_recorded=date_recorded,
-                    teamFrom_id=from_team_id,
-                    teamTo_id=to_team_id,
-                    season_id=season.season_id,
-                    market_value_eur=latest_entry.get('marketValue'),
-                    fee_eur=latest_entry.get('fee')
-                )
-
-                logger.info(f"Átigazolás - {player.name} (Régi: {tf.teamFrom_id}, Új: {tf.teamTo_id})")
-                player.current_team_id = tf.teamTo_id
-                session.commit()
+        if(len(tf_data['transfers']) != 0):
+            latest_entry = tf_data['transfers'][0]
+            try:
+                date_recorded = latest_entry.get('date')
                 
-                session.add(mv)
-                session.commit()
-                logger.info(f"Új Transfer rögzítve - {player.name}: {date_recorded},  {latest_entry.get('marketValue')}")
-        except Exception as e:
-            logger.error(f"Transfer Update Hiba: {e}")
+                # Megnézzük, van-e már ilyen dátumú bejegyzésünk
+                exists = session.query(FactTransfer).filter_by(
+                    player_id=player.player_id, 
+                    date_recorded=date_recorded
+                ).first()
 
+                if not exists:
+                    # Transfer adatok lekérdezése
+                    season = get_season_from_TMname(latest_entry.get('season'))
+                    from_team_id = get_or_create_team_by_tm_id(latest_entry.get('clubFrom', {}).get('id'), latest_entry.get('clubFrom', {}).get('name'))
+                    to_team_id = get_or_create_team_by_tm_id(latest_entry.get('clubTo', {}).get('id'), latest_entry.get('clubTo', {}).get('name'))
+
+                    tf = FactTransfer(
+                        player_id=player.player_id,
+                        date_recorded=date_recorded,
+                        teamFrom_id=from_team_id,
+                        teamTo_id=to_team_id,
+                        season_id=season.season_id,
+                        market_value_eur=latest_entry.get('marketValue'),
+                        fee_eur=latest_entry.get('fee')
+                    )
+
+                    logger.info(f"Átigazolás - {player.name} (Régi: {tf.teamFrom_id}, Új: {tf.teamTo_id})")
+                    player.current_team_id = tf.teamTo_id
+                    session.commit()
+                    
+                    session.add(tf)
+                    session.commit()
+                    logger.info(f"Új Transfer rögzítve - {player.name}: {date_recorded},  {latest_entry.get('marketValue')}")
+            except Exception as e:
+                logger.error(f"Transfer Update Hiba: {e}")
+
+    # Market Value ellenőrzés
+    mv_data = fetch_tm_market_value(player.tm_id)
+    if mv_data and 'marketValueHistory' in mv_data:
+        # Megnézzük a legutolsó bejegyzést az API-ban
+        if(len(mv_data['marketValueHistory']) != 0):    
+            latest_entry = mv_data['marketValueHistory'][-1]
+            try:
+                date_recorded = latest_entry.get('date')
+                
+                # Megnézzük, van-e már ilyen dátumú bejegyzésünk
+                exists = session.query(FactMarketValue).filter_by(
+                    player_id=player.player_id, 
+                    date_recorded=date_recorded
+                ).first()
+
+                if not exists:
+                    mv = FactMarketValue(
+                        player_id=player.player_id,
+                        date_recorded=date_recorded,
+                        market_value_eur=latest_entry.get('marketValue'),
+                        team_id=player.current_team_id
+                    )
+                    session.add(mv)
+                    session.commit()
+                    logger.info(f"Új Market Value rögzítve - {player.name}: {mv.market_value_eur})")
+            except Exception as e:
+                logger.error(f"Market Value Update Hiba: {e}")
 
     # Statisztika Frissítése (CSAK PREMIER LEAGUE + IDEI SZEZON)
     stats_data = fetch_tm_stats(player.tm_id)
@@ -149,12 +150,17 @@ def update_player_details(player, current_season_tm):
     if stats_data and 'stats' in stats_data:
         for entry in stats_data['stats']:
             # Szűrés: Szezon
-            if entry.get('seasonID') != current_season_tm:
+            if entry.get('seasonId') != current_season_tm:
                 continue
-            
+
             # Szűrés: Bajnokság (Premier League)
             comp_tm_id = entry.get('competitionId')
             if comp_tm_id != "GB1":  # Premier League TM kódja
+                continue
+
+            # Szűrés: Jelenlegi csapat
+            current_team_tm_id = session.query(DimTeam).filter_by(team_id=player.current_team_id).first().tm_id
+            if int(entry.get('clubId')) != int(current_team_tm_id):
                 continue
 
             # Megtaláltuk a PL idei statisztikáját. Keressük meg a DB-ben.
@@ -171,12 +177,12 @@ def update_player_details(player, current_season_tm):
             ).first()
 
             # Adatok az API-ból
-            api_apps = int(entry.get('appearances', 0))
-            api_goals = int(entry.get('goals', 0))
-            api_assists = int(entry.get('assists', 0))
-            api_yellow_cards = int(entry.get('yellowCards', 0) or 0)
-            api_red_cards = int(entry.get('redCards', 0) or 0)
-            api_minutes = int(entry.get('minutesPlayed', 0) or 0)
+            api_apps = entry.get('appearances')
+            api_goals = entry.get('goals')
+            api_assists = entry.get('assists')
+            api_yellow_cards = entry.get('yellowCards')
+            api_red_cards = entry.get('redCards')
+            api_minutes = entry.get('minutesPlayed')
 
             if stat_record:
                 # Összehasonlítás: Ha változott, frissítjük
@@ -188,7 +194,7 @@ def update_player_details(player, current_season_tm):
                     stat_record.red_cards != api_red_cards
                     ):
                     
-                    logger.info(f"Statisztika frissítése: {player.name} (PL, {current_season_tm})")
+                    logger.info(f"Statisztika frissítése: {player.name} (PL, {current_season_tm})\nApps: {stat_record.appearances} -> {api_apps}\nGoals: {stat_record.goals} -> {api_goals}\nAssists: {stat_record.assists} -> {api_assists}\nMins: {stat_record.minutes_played} -> {api_minutes}\nYellows: {stat_record.yellow_cards} -> {api_yellow_cards}\nReds: {stat_record.red_cards} -> {api_red_cards}")
                     stat_record.appearances = api_apps
                     stat_record.goals = api_goals
                     stat_record.assists = api_assists
@@ -225,12 +231,12 @@ def run_daily_etl():
     logger.info(f"Aktuális szezon (TM): {current_season_tm}")
 
     # Csapatok frissítése
-    teams_query = session.query(DimTeam).filter(DimTeam.tm_id.isnot(None))
+    teams_query = session.query(DimTeam).filter(DimTeam.tm_id.isnot(None)).filter(DimTeam.team_id <= 21)
     teams = teams_query.all()
     logger.info(f"Összesen {len(teams)} csapat részleteinek frissítése indul...")
 
     for i, team in enumerate(teams):
-        logger.info(f"[{i+1}/{len(teams)}] Feldolgozás: {player.name}...")
+        logger.info(f"[{i+1}/{len(teams)}] Feldolgozás: {team.name}...")
         update_team_details(team)
 
     # Játékosok frissítése
