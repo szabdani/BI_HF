@@ -255,15 +255,12 @@ def run_daily_etl():
     url = f"http://api.football-data.org/v4/competitions/{COMPETITION_CODE}/matches?dateFrom={yesterday_str}&dateTo={yesterday_str}"
     resp = requests_get_retry(url, headers=FD_HEADERS)
     
-    # Azon csapatok halmaza, akik játszottak tegnap
-    teams_played_ids = set() 
-    
     if resp and resp.status_code == 200:
         matches = resp.json().get('matches', [])
         logger.info(f"Tegnapi mérkőzések száma: {len(matches)}")
 
         season_obj = session.query(DimSeason).filter_by(season_name_TM=current_season_tm).first()
-        competition_obj = session.query(DimCompetition).filter_by(fd_id="2021").first()  # PL fd_id = 2021
+        competition_obj = session.query(DimCompetition).filter_by(fd_id=COMPETITION_CODE).first()
         
         for match_data in matches:
             if match_data['status'] == 'FINISHED':
@@ -280,10 +277,6 @@ def run_daily_etl():
                     away_team = session.query(DimTeam).filter_by(fd_id=match_data['awayTeam']['id']).first()
                     
                     if home_team and away_team:
-                        # Hozzáadjuk őket a frissítendő listához
-                        teams_played_ids.add(home_team.team_id)
-                        teams_played_ids.add(away_team.team_id)
-                        
                         # Match mentése
                         match_fact = FactMatch(
                             fd_match_id=fd_match_id,
@@ -296,15 +289,13 @@ def run_daily_etl():
                             away_score=match_data['score']['fullTime']['away'],
                             status=match_data['status']
                         )
+                        session.add(match_fact)
+                        session.commit()
                         logger.info(f"Meccs feldolgozva: {home_team.name} vs {away_team.name}")
                     else:
                         logger.warning(f"Ismeretlen csapatok a meccsben: {fd_match_id}")
     else:
         logger.error("Nem sikerült lekérni a tegnapi meccseket.")
-        return
-
-    if not teams_played_ids:
-        logger.info("Nem volt tegnap releváns mérkőzés. Leállítás.")
         return
 
     logger.info("Napi ETL sikeresen befejeződött.")
